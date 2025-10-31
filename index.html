@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Posture Guard - ตรวจจับท่าทาง</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/movenet@1.0.0/dist/movenet.min.js"></script>
+    
+    <style>
+        /* CSS จาก UI ก่อนหน้า (ปรับปรุงเล็กน้อย) */
+        body {
+            font-family: 'Sukhumvit Set', 'Kanit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #0d1117;
+            color: #e6edf3;
+            padding: 16px;
+            margin: 0;
+        }
+        .container {
+            max-width: 450px;
+            margin: 0 auto;
+        }
+        
+        /* Camera Feed Area */
+        .camera-feed {
+            background-color: #161b22;
+            position: relative;
+            height: 250px; /* เพิ่มความสูงสำหรับวิดีโอ */
+            border-radius: 12px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; /* ซ่อนส่วนเกินของวิดีโอ */
+            border: 1px solid #30363d;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* ให้วิดีโอเต็มพื้นที่ */
+            transform: scaleX(-1); /* กลับด้านวิดีโอเหมือนกระจก */
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); /* กลับด้าน Canvas ด้วย */
+        }
+
+        /* Buttons and Cards (Style เดิม) */
+        .main-action-buttons { display: flex; gap: 12px; margin-bottom: 12px; }
+        .btn { flex-grow: 1; padding: 16px 10px; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background-color 0.2s, transform 0.1s; }
+        .btn:active { transform: scale(0.98); }
+        #startBtn { background-color: #238636; color: white; }
+        #stopBtn { background-color: #da3633; color: white; }
+        #calibrateBtn { background-color: #58a6ff; color: #0d1117; padding: 12px 10px; }
+        .calibrate-section { margin-bottom: 24px; }
+        .setting-card { background-color: #161b22; padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #30363d; }
+        .card-title { font-size: 18px; font-weight: bold; margin-bottom: 16px; color: #58a6ff; }
+        label { display: block; margin-bottom: 18px; font-size: 14px; line-height: 1.4; }
+        input[type="range"] { width: 100%; margin-top: 8px; -webkit-appearance: none; height: 8px; background: #30363d; border-radius: 4px; outline: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; background: #58a6ff; border: 3px solid #0d1117; border-radius: 50%; cursor: pointer; }
+        .current-value { font-weight: bold; color: #58a6ff; float: right; }
+        .toggle-label { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; cursor: pointer; }
+        input[type="checkbox"] { appearance: none; width: 20px; height: 20px; border: 2px solid #58a6ff; border-radius: 4px; background-color: #161b22; display: grid; place-content: center; cursor: pointer; transition: background-color 0.2s; }
+        input[type="checkbox"]:checked { background-color: #58a6ff; border-color: #58a6ff; }
+        input[type="checkbox"]::before { content: "✓"; font-size: 16px; color: #0d1117; opacity: 0; transition: opacity 0.1s; }
+        input[type="checkbox"]:checked::before { opacity: 1; }
+        .tips-section .card-title { color: #ffaa33; }
+        .tips-list { list-style-type: '💡 '; padding-left: 20px; margin-top: 8px; font-size: 14px; color: #8b949e; }
+        .tips-list li { margin-bottom: 8px; }
+        hr { border: none; border-top: 1px solid #30363d; margin: 15px 0; }
+        
+        #statusMessage {
+            text-align: center;
+            margin-top: -15px;
+            margin-bottom: 15px;
+            font-weight: bold;
+            color: #ffaa33;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+  <div class="camera-feed">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+  </div>
+  
+  <div id="statusMessage">โปรดกด "เริ่มตรวจจับ" เพื่อเริ่มต้น</div>
+
+  <div class="main-action-buttons">
+    <button id="startBtn" class="btn">▶️ เริ่มตรวจจับ</button>
+    <button id="stopBtn" class="btn">⏹️ หยุด</button>
+  </div>
+  
+  <div class="calibrate-section">
+    <button id="calibrateBtn" class="btn">✨ สอบเทียบ (ท่าที่ดี)</button>
+  </div>
+
+  <hr>
+
+  <div class="setting-card">
+    <div class="card-title">⏰ การตั้งค่าเวลาและการตอบสนอง</div>
+
+    <label>
+      หน่วงเวลาก่อนแจ้งเตือน (มิลลิวินาที): 
+      <span id="holdVal" class="current-value">2000 มส.</span>
+      <input id="holdTime" type="range" min="500" max="5000" step="100" value="2000">
+    </label>
+
+    <label>
+      ระยะเวลาพักหลังแจ้งเตือน (วินาที): 
+      <span id="cooldownVal" class="current-value">30 วินาที</span>
+      <input id="cooldownRange" type="range" min="5" max="120" step="5" value="30">
+    </label>
+
+    <label>
+      จำนวนเฟรมสำหรับการปรับภาพให้เรียบ: 
+      <span id="smoothVal" class="current-value">5 เฟรม</span>
+      <input id="smoothRange" type="range" min="1" max="15" step="1" value="5">
+    </label>
+  </div>
+
+  <div class="setting-card">
+    <div class="card-title">📐 มุมการตรวจจับ (ความอ่อนไหว)</div>
+
+    <label>
+      เกณฑ์มุมคอโน้มไปข้างหน้า (องศา): 
+      <span id="neckThrVal" class="current-value">40°</span>
+      <input id="neckThr" type="range" min="20" max="80" step="1" value="40">
+    </label>
+
+    <label>
+      เกณฑ์มุมหลังค่อม/หลังงอ (องศา): 
+      <span id="backThrVal" class="current-value">20°</span>
+      <input id="backThr" type="range" min="5" max="60" step="1" value="20">
+    </label>
+  </div>
+  
+  <div class="setting-card">
+    <div class="card-title">📢 รูปแบบการแจ้งเตือน</div>
+    
+    <label class="toggle-label">
+      <input type="checkbox" id="audioToggle" checked> 
+      เปิดเสียงแจ้งเตือน
+    </label>
+    
+    <label class="toggle-label">
+      <input type="checkbox" id="vibrateToggle"> 
+      เปิดสั่น (หากอุปกรณ์รองรับ)
+    </label>
+  </div>
+
+  <div class="setting-card tips-section">
+    <div class="card-title">ℹ️ คำแนะนำการใช้งาน</div>
+    <ul class="tips-list">
+      <li>**การเริ่มต้น:** กด **สอบเทียบ** ขณะที่คุณนั่งในท่าที่ถูกต้องเสมอเพื่อตั้งค่าพื้นฐาน</li>
+      <li>**ความแม่นยำ:** ปรับ **เกณฑ์มุม** เพื่อให้เหมาะสมกับกล้อง ระยะห่าง และลักษณะการนั่งของคุณ</li>
+    </ul>
+  </div>
+
+</div>
+
+<script>
+    // **********************************************
+    // 2. JAVASCRIPT LOGIC (UI & TENSORFLOW.JS)
+    // **********************************************
+
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('outputCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusMessage = document.getElementById('statusMessage');
+    
+    let model;
+    let animationFrameId;
+    let calibratedAngles = { neck: 0, back: 0 };
+    let badPostureStartTime = null;
+    let isMonitoring = false;
+    let isCoolingDown = false;
+
+    // **********************************************
+    // A. ฟังก์ชันคำนวณมุม (ใช้ keypoints จาก MoveNet)
+    // **********************************************
+
+    /**
+     * คำนวณมุมระหว่าง 3 จุด (A, B, C) โดย B เป็นจุดศูนย์กลาง
+     * @param {number[]} a - [y, x] ของจุด A
+     * @param {number[]} b - [y, x] ของจุด B (Vertex)
+     * @param {number[]} c - [y, x] ของจุด C
+     * @returns {number} Angle in degrees.
+     */
+    function calculateAngle(a, b, c) {
+        const rad = Math.atan2(c[0] - b[0], c[1] - b[1]) - Math.atan2(a[0] - b[0], a[1] - b[1]);
+        let angle = Math.abs(rad * 180.0 / Math.PI);
+        if (angle > 180.0) {
+            angle = 360 - angle;
+        }
+        return angle;
+    }
+
+    /**
+     * ดึงมุมที่ใช้ในการตรวจจับท่าทาง
+     * @param {object} keypoints - Keypoints object จาก MoveNet
+     * @returns {object} { neck: angle, back: angle }
+     */
+    function getPostureAngles(keypoints) {
+        const points = keypoints.map(p => [p.y, p.x]); // เปลี่ยนเป็น [y, x]
+
+        const leftShoulder = points[5];
+        const rightShoulder = points[6];
+        const leftHip = points[11];
+        const rightHip = points[12];
+        const nose = points[0];
+        const ear = points[3]; // ใช้ Left Ear หรือ Right Ear ก็ได้
+
+        // 1. มุมคอ/หัว (Neck Angle): มุมระหว่างหู (Ear), ไหล่ (Shoulder) และจมูก (Nose)
+        // ใช้ไหล่ที่อยู่ใกล้กว่าเป็นจุดศูนย์กลาง (เพื่อความเสถียร)
+        const centerShoulder = [(leftShoulder[0] + rightShoulder[0]) / 2, (leftShoulder[1] + rightShoulder[1]) / 2];
+        const neckAngle = calculateAngle(nose, centerShoulder, ear);
+
+        // 2. มุมหลัง (Back Angle): มุมที่กำหนดความตรงของลำตัว (ระหว่างไหล่, สะโพก, และเข่าที่อยู่ด้านล่าง)
+        // เพื่อให้ง่ายสำหรับการนั่ง ใช้มุมระหว่าง ไหล่-สะโพก-จุดอ้างอิง
+        const centerHip = [(leftHip[0] + rightHip[0]) / 2, (leftHip[1] + rightHip[1]) / 2];
+        
+        // จุดอ้างอิงแนวตั้ง: ใช้จุดที่อยู่ต่ำลงมาในแนวเดียวกับสะโพก (จำลองเข่าหรือพื้น)
+        const verticalReference = [centerHip[0] + 0.5, centerHip[1]]; // จุดนี้อยู่ต่ำลงไป
+
+        // มุมระหว่าง ไหล่-สะโพก-แนวตั้ง (บอกว่าลำตัวโน้มไปข้างหน้ามากน้อยแค่ไหน)
+        const backAngle = calculateAngle(centerShoulder, centerHip, verticalReference);
+
+
+        // โค้ดนี้มีการแปลงและปรับเพื่อให้ได้มุมที่เหมาะสมกับการตรวจจับท่านั่ง/คอ
+        // (ในทางปฏิบัติ อาจจะต้องปรับจุด Keypoints เพิ่มเติมเพื่อให้ได้มุมที่แม่นยำที่สุด)
+        return { neck: neckAngle, back: backAngle };
+    }
+
+    // **********************************************
+    // B. ฟังก์ชันหลักสำหรับ TensorFlow.js
+    // **********************************************
+
+    async function loadModel() {
+        statusMessage.textContent = 'กำลังโหลดโมเดล...';
+        model = await movenet.load(2, { minPoseScore: 0.1 });
+        statusMessage.textContent = '✅ โมเดลโหลดสำเร็จ กด "สอบเทียบ" เพื่อเริ่มต้น';
+    }
+
+    async function setupCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 'video': true });
+            video.srcObject = stream;
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    resolve(video);
+                };
+            });
+        } catch (error) {
+            statusMessage.textContent = '❌ ไม่สามารถเข้าถึงกล้องได้: โปรดตรวจสอบสิทธิ์';
+            console.error('Error accessing webcam:', error);
+            return null;
+        }
+    }
+
+    function drawKeypoints(keypoints) {
+        // วาดจุดและเส้นเชื่อมต่อ (Skeleton)
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // วาดจุด
+        keypoints.forEach(point => {
+            if (point.score > 0.3) { // แสดงเฉพาะจุดที่มีความเชื่อมั่นสูง
+                ctx.beginPath();
+                ctx.arc(point.x * canvas.width / video.videoWidth, point.y * canvas.height / video.videoHeight, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = '#03DAC6'; // สีเขียว
+                ctx.fill();
+            }
+        });
+        
+        // วาดเส้น (ละเว้นเพื่อความเรียบง่ายในตัวอย่างนี้ แต่สามารถเพิ่มได้)
+    }
+
+    async function poseDetectionFrame() {
+        if (!isMonitoring || !model) {
+            return;
+        }
+
+        const videoWidth = video.videoWidth;
+        const videoHeight = video.videoHeight;
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        
+        // 1. ตรวจจับท่าทาง
+        const pose = await model.estimatePoses(video, { maxPoses: 1, flipHorizontal: false });
+
+        if (pose.length > 0) {
+            const keypoints = pose[0].keypoints.slice(0, 13); // ใช้แค่ 13 จุดหลัก
+            drawKeypoints(keypoints);
+            
+            // 2. ตรวจสอบท่าทาง
+            checkPosture(keypoints);
+        }
+
+        animationFrameId = requestAnimationFrame(poseDetectionFrame);
+    }
+
+    function checkPosture(keypoints) {
+        if (Object.values(calibratedAngles).every(a => a === 0)) {
+            statusMessage.textContent = '⚠️ โปรดกด "สอบเทียบ" ก่อนเริ่มการตรวจจับ';
+            return;
+        }
+
+        const currentAngles = getPostureAngles(keypoints);
+        const neckThr = parseFloat(document.getElementById('neckThr').value);
+        const backThr = parseFloat(document.getElementById('backThr').value);
+
+        // คำนวณความแตกต่างจากท่าสอบเทียบ
+        const neckDiff = Math.abs(currentAngles.neck - calibratedAngles.neck);
+        const backDiff = Math.abs(currentAngles.back - calibratedAngles.back);
+
+        let isBadPosture = false;
+
+        if (neckDiff > neckThr) {
+            isBadPosture = true;
+            statusMessage.textContent = `❌ ท่าทางไม่ถูกต้อง: คอโน้ม (${neckDiff.toFixed(1)}° > ${neckThr}°)`
+        } else if (backDiff > backThr) {
+            isBadPosture = true;
+            statusMessage.textContent = `❌ ท่าทางไม่ถูกต้อง: หลังงอ (${backDiff.toFixed(1)}° > ${backThr}°)`
+        } else {
+            statusMessage.textContent = '✅ ท่าทางถูกต้อง';
+            badPostureStartTime = null; // รีเซ็ตตัวนับ
+        }
+
+        // 3. จัดการการแจ้งเตือน
+        if (isBadPosture && !isCoolingDown) {
+            if (badPostureStartTime === null) {
+                badPostureStartTime = Date.now();
+            }
+            
+            const holdTime = parseFloat(document.getElementById('holdTime').value);
+
+            if (Date.now() - badPostureStartTime >= holdTime) {
+                triggerAlert();
+                badPostureStartTime = null; // รีเซ็ตเพื่อเริ่มนับใหม่หลัง Alert
+            }
+        }
+    }
+
+    function triggerAlert() {
+        const cooldownTime = parseFloat(document.getElementById('cooldownRange').value);
+        const audioToggle = document.getElementById('audioToggle').checked;
+        const vibrateToggle = document.getElementById('vibrateToggle').checked;
+
+        // แจ้งเตือน
+        statusMessage.textContent = '🚨 แจ้งเตือน! ปรับท่าทางของคุณ';
+        if (audioToggle) {
+            const audio = new Audio('https://www.soundjay.com/buttons/beep-01a.mp3'); // ตัวอย่างเสียง
+            audio.play();
+        }
+        if (vibrateToggle && navigator.vibrate) {
+            navigator.vibrate(500);
+        }
+        
+        // เข้าสู่ช่วง Cooldown
+        isCoolingDown = true;
+        setTimeout(() => {
+            isCoolingDown = false;
+            statusMessage.textContent = '✅ สิ้นสุดช่วงพัก, กลับสู่การตรวจจับ';
+        }, cooldownTime * 1000); 
+    }
+
+    // **********************************************
+    // C. การจัดการ UI และ Event Listeners
+    // **********************************************
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+        if (isMonitoring) return;
+        
+        isMonitoring = true;
+        const videoElement = await setupCamera();
+        if (videoElement) {
+            videoElement.play();
+            statusMessage.textContent = 'เริ่มการตรวจจับ...';
+            poseDetectionFrame();
+        }
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', () => {
+        isMonitoring = false;
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+        const stream = video.srcObject;
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        statusMessage.textContent = '⏹️ หยุดการตรวจจับ';
+    });
+
+    document.getElementById('calibrateBtn').addEventListener('click', async () => {
+        if (!isMonitoring) {
+            alert('โปรดกด "เริ่มตรวจจับ" และรอให้กล้องทำงานก่อนทำการสอบเทียบ');
+            return;
+        }
+
+        // ตรวจจับท่าทางเพื่อสอบเทียบ
+        const pose = await model.estimatePoses(video, { maxPoses: 1, flipHorizontal: false });
+
+        if (pose.length > 0) {
+            const keypoints = pose[0].keypoints.slice(0, 13);
+            calibratedAngles = getPostureAngles(keypoints);
+            
+            // ตั้งค่ามุมหลังให้เป็น 0 เพื่อให้ Angle Diff เป็นความแตกต่างจากท่าตั้งตรง
+            // (ในความเป็นจริง ให้ตั้งค่าตามที่โมเดลอ่านได้ในท่านั่งที่ดี)
+            alert(`✨ สอบเทียบสำเร็จ! ระบบบันทึกท่าทางที่ดีแล้ว (คอ: ${calibratedAngles.neck.toFixed(1)}°, หลัง: ${calibratedAngles.back.toFixed(1)}°)`);
+            statusMessage.textContent = '✅ สอบเทียบสำเร็จ: เริ่มการตรวจจับท่าทาง';
+        } else {
+            alert('ไม่พบตัวบุคคลในกล้อง! โปรดนั่งให้เห็นเต็มตัว');
+            statusMessage.textContent = '⚠️ ไม่พบตัวบุคคล';
+        }
+    });
+
+    // JavaScript สำหรับอัปเดตค่าตัวเลขตามการเลื่อน (เดิม)
+    const controls = [
+        { range: 'cooldownRange', value: 'cooldownVal', suffix: ' วินาที', initial: 30 },
+        { range: 'smoothRange', value: 'smoothVal', suffix: ' เฟรม', initial: 5 },
+        { range: 'neckThr', value: 'neckThrVal', suffix: '°', initial: 40 },
+        { range: 'backThr', value: 'backThrVal', suffix: '°', initial: 20 },
+        { range: 'holdTime', value: 'holdVal', suffix: ' มส.', initial: 2000 }
+    ];
+
+    controls.forEach(control => {
+        const range = document.getElementById(control.range);
+        const valueSpan = document.getElementById(control.value);
+        if (range && valueSpan) {
+            range.value = control.initial; 
+            valueSpan.textContent = range.value + control.suffix;
+            range.addEventListener('input', (e) => {
+                valueSpan.textContent = e.target.value + control.suffix;
+            });
+        }
+    });
+
+    // เริ่มโหลดโมเดลเมื่อหน้าเว็บโหลดเสร็จ
+    window.onload = loadModel;
+</script>
+</body>
+</html>
